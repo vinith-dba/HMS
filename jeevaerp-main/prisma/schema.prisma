@@ -1,0 +1,1098 @@
+// =============================================================================
+// Jeeva Multispeciality Hospital ERP — schema v2.0 (production)
+// =============================================================================
+// Policies:
+//   * Money is always Decimal(10,2); GST rates Decimal(4,2). Never Float.
+//   * Medical records are never hard-deleted. Users/doctors/medicines are
+//     deactivated (isActive/active=false); patients are merged, not removed.
+//   * Referential actions stay at Prisma defaults (required -> Restrict).
+//   * Every human-facing number (JMH/OP/INV) comes from the Counter table
+//     via one atomic INSERT ... ON CONFLICT ... RETURNING statement.
+// =============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  // Runtime: pooled (pgbouncer, port 6543). Migrations/DDL: direct session
+  // connection (port 5432) — pgbouncer can't run migrations.
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  PATIENT
+  DOCTOR
+  RECEPTIONIST
+  LAB_TECH
+  PHARMACIST
+  ADMIN
+}
+
+enum Gender {
+  MALE
+  FEMALE
+  OTHER
+}
+
+enum MaritalStatus {
+  SINGLE
+  MARRIED
+  DIVORCED
+  WIDOWED
+  OTHER
+}
+
+enum AppointmentType {
+  WALKIN
+  ONLINE
+}
+
+// ---------------------------------------------------------------------------
+// Insurance / cashless claims
+// ---------------------------------------------------------------------------
+
+enum ClaimType {
+  CASHLESS       // hospital bills the insurer/TPA directly
+  REIMBURSEMENT  // patient pays, then claims back
+}
+
+enum ClaimStage {
+  PRE_AUTH       // pre-authorization, raised at/soon after admission
+  FINAL          // final claim, raised at discharge with the actual bill
+}
+
+/// The lifecycle every claim moves through. Each move writes a ClaimEvent so
+/// the timeline is a real audit trail, not a single mutable status field.
+enum ClaimStatus {
+  DRAFT
+  SUBMITTED          // sent to the insurer/TPA — "applied"
+  QUERIED            // insurer wants more documents/info
+  APPROVED
+  PARTIALLY_APPROVED
+  REJECTED
+  SETTLED            // money received
+  CLOSED
+}
+
+enum AppointmentStatus {
+  BOOKED
+  CHECKED_IN
+  COMPLETED
+  CANCELLED
+}
+
+enum LabTestStatus {
+  PENDING
+  COMPLETED
+}
+
+/// Lifecycle of a scanned handwritten prescription as it moves through the ERP.
+enum PrescriptionStatus {
+  UPLOADED          // reception scanned it
+  SENT_TO_PHARMACY  // reception dispatched it to the pharmacy queue
+  DISPENSED         // pharmacy dispensed against it
+  CANCELLED
+}
+
+enum StockTxType {
+  PURCHASE
+  DISPENSE
+  ADJUSTMENT
+  RETURN
+}
+
+/// Which desk raised the invoice — powers category-wise revenue in admin.
+enum InvoiceSource {
+  CONSULTATION
+  LAB
+  PHARMACY
+  IPD
+  OTHER
+}
+
+/// Everything that can land on an inpatient's final bill.
+enum ChargeCategory {
+  PROCEDURE
+  DOCTOR_VISIT
+  NURSING
+  OXYGEN
+  INVESTIGATION
+  CONSUMABLE
+  PHARMACY
+  OTHER
+}
+
+enum BedStatus {
+  AVAILABLE
+  OCCUPIED
+  MAINTENANCE
+}
+
+enum AdmissionStatus {
+  ADMITTED
+  DISCHARGED
+}
+
+enum InvoiceStatus {
+  PENDING
+  PARTIALLY_PAID
+  PAID
+  CANCELLED
+  REFUNDED
+}
+
+enum PaymentMode {
+  CASH
+  UPI
+  CARD
+  NETBANKING
+  OTHER
+}
+
+// ---------------------------------------------------------------------------
+// Identity & access
+// ---------------------------------------------------------------------------
+
+/// Staff identity only. Patients are NOT users — they authenticate against
+/// the Patient table via OTP (families share phone numbers; User.phone is
+/// unique, Patient.phone is not).
+model User {
+  id           String    @id @default(cuid())
+  /// Portal login handle, e.g. "reception.ravi" (role.name). Unique.
+  username     String    @unique
+  phone        String    @unique
+  /// OTP backup channel — used to send a staff login code if they exist in DB.
+  email        String?   @unique
+  name         String
+  passwordHash String?
+  role         Role
+  isActive     Boolean   @default(true)
+  lastLoginAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  doctorProfile       Doctor?
+  appointmentsCreated Appointment[]      @relation("AppointmentCreatedBy")
+  labTestsHandled     LabTest[]          @relation("LabTestTechnician")
+  stockTransactions   StockTransaction[]
+  invoicesCreated     Invoice[]          @relation("InvoiceCreatedBy")
+  paymentsReceived    Payment[]          @relation("PaymentReceivedBy")
+  auditLogs           AuditLog[]
+  refreshTokens       RefreshToken[]
+  otps                Otp[]
+  admissionCharges AdmissionCharge[] @relation("AdmissionChargeAddedBy")
+
+  refundsIssued   Refund[]           @relation("RefundedBy")
+  bedMoves        BedStay[]          @relation("BedStayMovedBy")
+  advancesTaken   AdmissionAdvance[] @relation("AdvanceReceivedBy")
+  vitalsRecorded  Vitals[]           @relation("VitalsRecordedBy")
+  claimsCreated   InsuranceClaim[]   @relation("ClaimCreatedBy")
+  claimEvents     ClaimEvent[]       @relation("ClaimEventBy")
+  sessions        StaffSession[]     @relation("UserSessions")
+}
+
+model Patient {
+  // ---- Primary identifiers ----
+  id        String @id @default(cuid())
+  /// Internal UUID for external APIs.
+  uuid      String @unique @default(uuid())
+  /// Printed on OP/IP slips (JMH2026OP00123). Patient logs in with this.
+  displayId String @unique
+
+  // ---- Name (split for records, fullName denormalized for search) ----
+  firstName  String
+  middleName String?
+  lastName   String?
+  fullName   String
+
+  // ---- Demographics ----
+  dob           DateTime?      @db.Date
+  /// Captured when DOB is unknown (common for walk-ins).
+  age           Int?
+  gender        Gender?
+  /// Kept as a validated string ("A+", "O-", …) — blood-group symbols aren't
+  /// valid Prisma enum identifiers, so a checked string is the clean choice.
+  bloodGroup    String?
+  maritalStatus MaritalStatus?
+
+  // ---- Contact ----
+  phone          String
+  alternatePhone String?
+  email          String?
+  address        String?
+  city           String?
+  state          String?
+  country        String? @default("India")
+  postalCode     String?
+
+  // ---- Personal ----
+  occupation        String?
+  nationality       String?
+  preferredLanguage String?
+  photoUrl          String?
+
+  // ---- Emergency contact ----
+  emergencyContactName     String?
+  emergencyContactRelation String?
+  emergencyContactPhone    String?
+
+  // ---- Medical ----
+  allergies String?
+
+  // ---- Identification ----
+  govtIdNumber String?
+
+  // ---- Referral (ADMIN-ONLY, snapshot at registration) ----
+  /// Who referred this patient to the hospital. Snapshot string, not a live
+  /// FK — the value recorded at registration never drifts. Strip from every
+  /// non-admin serializer.
+  referredByName String?
+  referralSource String?
+
+  // ---- Flags ----
+  isVip      Boolean   @default(false)
+  isActive   Boolean   @default(true)
+  isDeceased Boolean   @default(false)
+  deceasedAt DateTime?
+
+  // ---- Duplicate merge (losing record points at the survivor) ----
+  mergedIntoId String?
+  mergedInto   Patient?  @relation("PatientMerge", fields: [mergedIntoId], references: [id])
+  mergedFrom   Patient[] @relation("PatientMerge")
+
+  // ---- System / audit ----
+  remarks     String?
+  createdById String?
+  updatedById String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  // ---- Relations ----
+  appointments        Appointment[]
+  invoices            Invoice[]
+  labTests            LabTest[]
+  prescriptionUploads PrescriptionUpload[]
+  admissions          Admission[]
+  otps                Otp[]
+  refreshTokens RefreshToken[]
+  auditLogs     AuditLog[]
+  insuranceClaims InsuranceClaim[] @relation("PatientClaims")
+
+  @@index([displayId])
+  @@index([uuid])
+  @@index([phone])
+  @@index([fullName])
+  @@index([dob])
+  @@index([isActive])
+  @@index([createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Doctors, schedules & appointments
+// ---------------------------------------------------------------------------
+
+model Doctor {
+  id              String  @id @default(cuid())
+  userId          String? @unique
+  user            User?   @relation(fields: [userId], references: [id])
+  name            String
+  specialization  String
+  department      String
+  consultationFee Decimal @db.Decimal(10, 2)
+  active          Boolean @default(true)
+
+  // ---- Profile (for booking + public directory cards) ----
+  qualification   String?
+  experienceYears Int?
+  age             Int?
+  languages       String?
+  photoUrl        String?
+  bio             String?
+
+  schedules     DoctorSchedule[]
+  slots         DoctorSlot[]
+  appointments  Appointment[]
+  prescriptions Prescription[]
+  admissions    Admission[]
+
+  @@index([department])
+}
+
+/// Weekly recurring OPD template. Concrete DoctorSlot rows are generated
+/// from this (cron or on-demand) — reception never hand-creates slots.
+model DoctorSchedule {
+  id              String  @id @default(cuid())
+  doctorId        String
+  doctor          Doctor  @relation(fields: [doctorId], references: [id])
+  /// 0 = Sunday … 6 = Saturday
+  dayOfWeek       Int
+  startTime       String
+  endTime         String
+  slotDurationMin Int     @default(10)
+  isActive        Boolean @default(true)
+
+  @@unique([doctorId, dayOfWeek, startTime])
+}
+
+model DoctorSlot {
+  id        String   @id @default(cuid())
+  doctorId  String
+  doctor    Doctor   @relation(fields: [doctorId], references: [id])
+  date      DateTime @db.Date
+  /// "HH:MM" 24h — display + equality only.
+  startTime String
+  endTime   String
+  isBooked  Boolean  @default(false)
+  /// Doctor unavailable for this slot — leave, surgery, emergency. Distinct from
+  /// isBooked: a blocked slot has no patient, it simply can't be sold.
+  isBlocked   Boolean @default(false)
+  blockReason String?
+
+  appointment Appointment?
+
+  @@unique([doctorId, date, startTime])
+  @@index([doctorId, date, isBooked])
+}
+
+model Appointment {
+  id        String  @id @default(cuid())
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+  doctorId  String
+  doctor    Doctor  @relation(fields: [doctorId], references: [id])
+  /// Unique -> one appointment per slot: DB-level double-booking guarantee.
+  /// NULLABLE on purpose: a CANCELLED visit releases its slot (Postgres allows
+  /// many NULLs under a unique index), so the slot can be booked by someone else.
+  /// Without this, every cancellation would burn a slot permanently.
+  slotId    String?     @unique
+  slot      DoctorSlot? @relation(fields: [slotId], references: [id])
+  /// Denormalized from slot.date — makes "today's queue" a single-table query.
+  visitDate DateTime   @db.Date
+  /// Denormalized from slot.startTime ("HH:MM"), same reason as visitDate — and it
+  /// survives the slot being released on cancellation.
+  timeAtBooking String @default("00:00")
+
+  type     AppointmentType
+  status   AppointmentStatus @default(BOOKED)
+  opNumber String            @unique
+
+  /// Snapshot of the consultation fee at the moment of booking (money never
+  /// shifts under a booked visit even if the doctor's fee changes later).
+  priceAtBooking Decimal @db.Decimal(10, 2)
+
+  /// ADMIN-ONLY per-visit referral snapshot. Who referred the patient FOR THIS
+  /// visit. Must be stripped from every non-admin serializer.
+  referredByName String?
+  referralSource String?
+
+  checkedInAt        DateTime?
+  completedAt        DateTime?
+  cancelledAt        DateTime?
+  cancellationReason String?
+
+  createdById String
+  createdBy   User     @relation("AppointmentCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+
+  prescription        Prescription?
+  prescriptionUploads PrescriptionUpload[]
+  vitals              Vitals?
+  labTests            LabTest[]
+  invoices            Invoice[]
+
+  @@index([doctorId, visitDate, status])
+  @@index([patientId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Clinical
+// ---------------------------------------------------------------------------
+
+/// Vitals for one OP visit — BP, pulse, height, weight, temp, SpO2. The paper
+/// OPD sheet prints these as blank ruled boxes at booking (triage pen fills
+/// them by hand); reception then types the handwritten numbers in here,
+/// exactly like PrescriptionUpload does for the ℞ table. One row per visit.
+model Vitals {
+  id            String      @id @default(cuid())
+  appointmentId String      @unique
+  appointment   Appointment @relation(fields: [appointmentId], references: [id])
+
+  bpSystolic  Int? // mmHg
+  bpDiastolic Int? // mmHg
+  pulse       Int? // bpm
+  tempF       Decimal? @db.Decimal(4, 1)
+  spo2        Int? // %
+  heightCm    Decimal? @db.Decimal(5, 1)
+  weightKg    Decimal? @db.Decimal(5, 1)
+  // BMI / BSA are derived from height + weight at read time, not stored —
+  // they'd go stale the moment either input is corrected.
+
+  recordedById String
+  recordedBy   User     @relation("VitalsRecordedBy", fields: [recordedById], references: [id])
+  recordedAt   DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model Prescription {
+  id            String      @id @default(cuid())
+  appointmentId String      @unique
+  appointment   Appointment @relation(fields: [appointmentId], references: [id])
+  doctorId      String
+  doctor        Doctor      @relation(fields: [doctorId], references: [id])
+  diagnosis     String
+  nextVisitDate DateTime?   @db.Date
+  notes         String?
+  createdAt     DateTime    @default(now())
+
+  items PrescriptionItem[]
+  // Advised tests are NOT stored as JSON: saving a prescription creates
+  // LabTest rows on the appointment — those rows are the source of truth.
+}
+
+/// A scanned/uploaded prescription document (PDF or image). Reception scans the
+/// paper prescription after a visit and uploads it; it attaches to the visit
+/// AND the patient, so the patient sees it in their profile by UHID.
+model PrescriptionUpload {
+  id            String  @id @default(cuid())
+  patientId     String
+  patient       Patient @relation(fields: [patientId], references: [id])
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id])
+
+  /// Public URL (Cloudinary) OR local path (/uploads/...) depending on storage.
+  fileUrl      String
+  /// Storage backend used, so we know how to build/serve the URL.
+  storage      String   @default("local")
+  fileName     String
+  mimeType     String
+  fileSize     Int
+  /// Free-text title, e.g. "Rheumatology consult — 27 May".
+  title        String?
+  uploadedById String
+  createdAt    DateTime @default(now())
+
+  /// The doctor writes by hand; reception scans and dispatches it through the
+  /// ERP. This tracks where the scan has got to.
+  status            PrescriptionStatus @default(UPLOADED)
+  sentToPharmacyAt  DateTime?
+  dispensedAt       DateTime?
+  dispensedById     String?
+  /// Which doctor's handwriting this is (snapshot, from the visit).
+  doctorName        String?
+
+  /// Clinical details typed from the handwritten sheet, printed onto the
+  /// generated OPD PDF. labsAdvised is newline-separated test names —
+  /// advisory text on the sheet, not lab orders (those are LabTest rows).
+  diagnosis   String?
+  advice      String?
+  labsAdvised String?
+  nextVisit   String?
+
+  invoices Invoice[]
+  items    PrescriptionUploadItem[]
+
+  @@index([patientId, createdAt])
+  @@index([appointmentId])
+  @@index([status, sentToPharmacyAt])
+
+  /// An inpatient prescription belongs to the STAY, not to an OPD appointment.
+  /// Exactly one of appointmentId / admissionId is normally set.
+  admissionId String?
+  admission   Admission? @relation(fields: [admissionId], references: [id])
+
+}
+
+/// A medicine line typed by reception while uploading the scan. Free text by
+/// design (they're transcribing handwriting) with an optional link into the
+/// pharmacy master when the name matches — that link is what lets the
+/// pharmacist dispense in two clicks instead of re-reading the scan.
+model PrescriptionUploadItem {
+  id       String             @id @default(cuid())
+  uploadId String
+  upload   PrescriptionUpload @relation(fields: [uploadId], references: [id], onDelete: Cascade)
+
+  /// As typed by reception — survives catalog renames.
+  medicineName String
+  medicineId   String?
+  medicine     Medicine? @relation(fields: [medicineId], references: [id])
+  qty          Int       @default(1)
+  /// Free text: "1-0-1 after food", "5 days", etc.
+  dosage       String?
+
+  @@index([uploadId])
+}
+
+model PrescriptionItem {
+  id             String       @id @default(cuid())
+  prescriptionId String
+  prescription   Prescription @relation(fields: [prescriptionId], references: [id])
+  /// Optional link into the pharmacy master (doctor may prescribe unstocked items).
+  medicineId   String?
+  medicine     Medicine? @relation(fields: [medicineId], references: [id])
+  /// Snapshot of the name as written — survives master renames.
+  medicineName String
+  dosage       String
+  frequency    String
+  duration     String
+  instructions String?
+
+  @@index([prescriptionId])
+}
+
+model LabTestCatalog {
+  id         String  @id @default(cuid())
+  name       String  @unique
+  code       String? @unique
+  price      Decimal @db.Decimal(10, 2)
+  gstRatePct Decimal @default(0) @db.Decimal(4, 2)
+  active     Boolean @default(true)
+
+  labTests LabTest[]
+}
+
+model LabTest {
+  id            String       @id @default(cuid())
+  /// Optional: walk-in lab tests have no doctor appointment.
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id])
+  /// A lab test always belongs to a patient (direct link, survives no-appointment case).
+  patientId     String?
+  patient       Patient?     @relation(fields: [patientId], references: [id])
+  catalogId     String?
+  catalog       LabTestCatalog? @relation(fields: [catalogId], references: [id])
+  /// Snapshot of name + price at order time — survives catalog price changes.
+  testName     String
+  priceAtOrder Decimal? @db.Decimal(10, 2)
+
+  status           LabTestStatus @default(PENDING)
+  reportFileUrl    String?
+  reportUploadedAt DateTime?
+  technicianId     String?
+  technician       User?         @relation("LabTestTechnician", fields: [technicianId], references: [id])
+  createdAt        DateTime      @default(now())
+  completedAt      DateTime?
+
+  invoiceItems InvoiceItem[]
+
+  @@index([status])
+  @@index([appointmentId])
+  /// An INPATIENT's tests charge to the room tab, not the counter.
+  /// Exactly one of appointmentId / admissionId is normally set.
+  admissionId String?
+  admission   Admission? @relation(fields: [admissionId], references: [id])
+
+  @@index([admissionId])
+}
+
+// ---------------------------------------------------------------------------
+// Pharmacy — master + batches + ledger
+// ---------------------------------------------------------------------------
+
+/// One row per medicine. Reorder threshold lives HERE (compared against the
+/// SUM of batch quantities), not on individual batches.
+model Medicine {
+  id               String  @id @default(cuid())
+  name             String  @unique
+  genericName      String?
+  manufacturer     String?
+  /// HSN code for GST filing.
+  hsnCode          String?
+  /// Medicines are commonly 5% or 12% GST in India — set per item.
+  gstRatePct       Decimal @default(5.00) @db.Decimal(4, 2)
+  unit             String  @default("tablet")
+  /// TRUE for antibiotics, TB drugs, antimalarials — anything where stopping the
+  /// course early is actively harmful (it breeds resistance rather than just
+  /// leaving the patient undertreated). The dispense scratchpad refuses to
+  /// quietly short-supply these: it warns, and it records why.
+  courseCritical   Boolean @default(false)
+  reorderThreshold Int     @default(10)
+  rackLocation     String?
+  active           Boolean @default(true)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  batches           StockBatch[]
+  prescriptionItems PrescriptionItem[]
+  uploadItems       PrescriptionUploadItem[]
+}
+
+/// One row per physical batch on the shelf. Dispensing is FEFO:
+/// first-expiry, first-out — the [medicineId, expiryDate] index serves it.
+model StockBatch {
+  id            String   @id @default(cuid())
+  medicineId    String
+  medicine      Medicine @relation(fields: [medicineId], references: [id])
+  batchNo       String
+  expiryDate    DateTime @db.Date
+  quantity      Int      @default(0)
+  purchasePrice Decimal? @db.Decimal(10, 2)
+  /// Selling price — Indian pharmacies bill at printed MRP.
+  mrp           Decimal  @db.Decimal(10, 2)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  transactions StockTransaction[]
+  invoiceItems InvoiceItem[]
+
+  @@unique([medicineId, batchNo])
+  @@index([medicineId, expiryDate])
+  @@index([expiryDate])
+}
+
+/// Ledger: batch quantity is only ever a side effect of rows written here.
+/// PURCHASE/RETURN carry +qty, DISPENSE carries -qty, ADJUSTMENT either.
+model StockTransaction {
+  id            String      @id @default(cuid())
+  batchId       String
+  batch         StockBatch  @relation(fields: [batchId], references: [id])
+  type          StockTxType
+  qty           Int
+  /// Invoice receiptNo (dispense) or supplier invoice no (purchase).
+  refId         String?
+  reason        String?
+  performedById String
+  performedBy   User        @relation(fields: [performedById], references: [id])
+  createdAt     DateTime    @default(now())
+
+  @@index([batchId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Billing — one invoice model for every desk
+// ---------------------------------------------------------------------------
+
+/// Consultation, lab and pharmacy all bill through here. One receipt
+/// numbering, one GST report, one payment flow; admin's category-wise
+/// revenue is GROUP BY source.
+model Invoice {
+  id        String        @id @default(cuid())
+  receiptNo String        @unique
+  patientId String
+  patient   Patient       @relation(fields: [patientId], references: [id])
+  source    InvoiceSource
+  status    InvoiceStatus @default(PENDING)
+  /// Set for consultation invoices (and lab invoices raised off a visit).
+  appointmentId String?
+  appointment   Appointment? @relation(fields: [appointmentId], references: [id])
+  /// Set for pharmacy invoices raised against a scanned prescription.
+  prescriptionUploadId String?
+  prescriptionUpload   PrescriptionUpload? @relation(fields: [prescriptionUploadId], references: [id])
+  /// Set for IPD (discharge) invoices.
+  admissionId String?
+  admission   Admission? @relation(fields: [admissionId], references: [id])
+
+  subtotal       Decimal @db.Decimal(10, 2)
+  discountAmount Decimal @default(0) @db.Decimal(10, 2)
+  taxableAmount  Decimal @db.Decimal(10, 2)
+  cgstAmount     Decimal @db.Decimal(10, 2)
+  sgstAmount     Decimal @db.Decimal(10, 2)
+  totalAmount    Decimal @db.Decimal(10, 2)
+
+  notes       String?
+  paidAt      DateTime?
+  cancelledAt DateTime?
+  createdById String
+  createdBy   User      @relation("InvoiceCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime  @default(now())
+
+  items    InvoiceItem[]
+  payments Payment[]
+
+  @@index([patientId, createdAt])
+  @@index([source, createdAt])
+  @@index([status])
+  refunds  Refund[]
+}
+
+model InvoiceItem {
+  id        String  @id @default(cuid())
+  invoiceId String
+  invoice   Invoice @relation(fields: [invoiceId], references: [id])
+
+  description String
+  /// HSN (goods) / SAC (services) code printed on GST invoices.
+  hsnSac     String?
+  qty        Int     @default(1)
+  unitPrice  Decimal @db.Decimal(10, 2)
+  amount     Decimal @db.Decimal(10, 2)
+  gstRatePct Decimal @default(0) @db.Decimal(4, 2)
+
+  /// Pharmacy line -> exact batch dispensed (full traceability).
+  batchId   String?
+  batch     StockBatch? @relation(fields: [batchId], references: [id])
+  /// Lab line -> the test being billed.
+  labTestId String?
+  labTest   LabTest?    @relation(fields: [labTestId], references: [id])
+
+  @@index([invoiceId])
+}
+
+/// Split payments are real (half cash, half UPI). Invoice.status is derived
+/// from the sum of its payments at the service layer.
+model Payment {
+  id           String      @id @default(cuid())
+  invoiceId    String
+  invoice      Invoice     @relation(fields: [invoiceId], references: [id])
+  mode         PaymentMode
+  amount       Decimal     @db.Decimal(10, 2)
+  /// UPI transaction ref / card auth code.
+  reference    String?
+  receivedById String
+  receivedBy   User        @relation("PaymentReceivedBy", fields: [receivedById], references: [id])
+  createdAt    DateTime    @default(now())
+
+  @@index([invoiceId])
+}
+
+// ---------------------------------------------------------------------------
+// Audit, OTP, sessions, counters
+// ---------------------------------------------------------------------------
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  /// Exactly one of the two actors is set (staff action vs patient action).
+  actorUserId    String?
+  actorUser      User?    @relation(fields: [actorUserId], references: [id])
+  actorPatientId String?
+  actorPatient   Patient? @relation(fields: [actorPatientId], references: [id])
+  action         String
+  targetTable    String
+  targetId       String
+  meta           Json?
+  ipAddress      String?
+  userAgent      String?
+  createdAt      DateTime @default(now())
+
+  @@index([targetTable, targetId])
+  @@index([actorUserId, createdAt])
+  @@index([actorPatientId, createdAt])
+}
+
+model Otp {
+  id        String   @id @default(cuid())
+  /// Exactly one of patientId / userId is set (patient OTP vs staff OTP).
+  patientId String?
+  patient   Patient? @relation(fields: [patientId], references: [id])
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  /// Destination the code was sent to (masked phone or email) — for display.
+  destination String?
+  phone       String?
+  /// Never store the raw 6-digit code — SHA-256 hash only.
+  codeHash   String
+  expiresAt  DateTime
+  attempts   Int       @default(0)
+  consumedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  @@index([patientId, createdAt])
+  @@index([userId, createdAt])
+  @@index([expiresAt])
+}
+
+model RefreshToken {
+  id        String   @id @default(cuid())
+  /// Staff session -> userId set. Patient session -> patientId set.
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id])
+  patientId String?
+  patient   Patient? @relation(fields: [patientId], references: [id])
+  tokenHash String   @unique
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+  @@index([patientId])
+  @@index([expiresAt])
+}
+
+/// Year-scoped atomic counters behind every human-facing ID
+/// (JMH-2026-000123, OP-2026-000045, INV-2026-000312).
+model Counter {
+  key   String @id
+  value Int    @default(0)
+}
+
+/// Single-row hospital configuration used on invoices (GSTIN, legal name, address).
+/// Seeded once; editable by admin later.
+/// A ward groups beds and carries the daily bed charge.
+/// GST note: hospital room rent above ₹5,000/day (non-ICU) attracts 5% GST
+/// without ITC; at or below that, and ICU, it's exempt. Default 0 — the
+/// admin sets the rate per ward with the CA.
+/// A single line on an inpatient's running tab. Everything done during the stay —
+/// a dressing, an oxygen hour, a doctor's round, medicines sent up from the
+/// pharmacy — lands here, and the whole ledger is billed once at discharge.
+/// Money is snapshotted (unitPrice/gstRatePct), so later price changes never
+/// rewrite a stay that already happened.
+model AdmissionCharge {
+  id          String    @id @default(cuid())
+  admissionId String
+  admission   Admission @relation(fields: [admissionId], references: [id], onDelete: Cascade)
+
+  category    ChargeCategory @default(OTHER)
+  description String
+  qty         Int            @default(1)
+  unitPrice   Decimal        @db.Decimal(10, 2)
+  gstRatePct  Decimal        @default(0) @db.Decimal(4, 2)
+
+  /// Set when the pharmacy posted this to the room. Stops the same dispense
+  /// being charged twice, and lets us trace a line back to the batch it came from.
+  sourceRef String?
+
+  addedById String
+  addedBy   User     @relation("AdmissionChargeAddedBy", fields: [addedById], references: [id])
+  createdAt DateTime @default(now())
+
+  @@index([admissionId])
+}
+
+model Ward {
+  id          String  @id @default(cuid())
+  name        String  @unique
+  /// GENERAL / SEMI_PRIVATE / PRIVATE / ICU — kept as text so the hospital
+  /// can name their own categories.
+  category    String
+  floor       String?
+  dailyCharge Decimal @default(0) @db.Decimal(10, 2)
+  gstRatePct  Decimal @default(0) @db.Decimal(4, 2)
+  active      Boolean @default(true)
+
+  beds Bed[]
+}
+
+model Bed {
+  id     String    @id @default(cuid())
+  wardId String
+  ward   Ward      @relation(fields: [wardId], references: [id])
+  bedNo  String
+  status BedStatus @default(AVAILABLE)
+
+  admissions Admission[]
+
+  @@unique([wardId, bedNo])
+  @@index([wardId, status])
+  bedStays BedStay[]
+}
+
+/// An inpatient stay. The bed-charge rate is snapshotted at admission so a
+/// later ward-price change can't rewrite a bill mid-stay.
+model Admission {
+  id       String @id @default(cuid())
+  /// JMH2026IP00001
+  ipNumber String @unique
+
+  patientId String
+  patient   Patient @relation(fields: [patientId], references: [id])
+
+  bedId String
+  bed   Bed    @relation(fields: [bedId], references: [id])
+
+  /// The attending / referred doctor inside the hospital.
+  doctorId String
+  doctor   Doctor @relation(fields: [doctorId], references: [id])
+
+  /// Why they were admitted — provisional diagnosis or reason, free text.
+  reason String?
+
+  /// The caring person staying with the patient.
+  attendantName     String?
+  attendantPhone    String?
+  attendantRelation String?
+
+  dailyChargeAtAdmit Decimal @db.Decimal(10, 2)
+  wardNameAtAdmit    String
+  gstRatePctAtAdmit  Decimal @default(0) @db.Decimal(4, 2)
+
+  status        AdmissionStatus @default(ADMITTED)
+  admittedAt    DateTime        @default(now())
+  dischargedAt  DateTime?
+  admittedById  String
+  dischargedById String?
+  notes         String?
+
+  invoices Invoice[]
+
+  @@index([status, admittedAt])
+  @@index([patientId])
+
+  charges             AdmissionCharge[]
+  prescriptionUploads PrescriptionUpload[]
+
+  labTests    LabTest[]
+  bedStays BedStay[]
+  advances AdmissionAdvance[]
+}
+
+model HospitalConfig {
+  id          String   @id @default(cuid())
+  legalName   String
+  addressLine String
+  city        String
+  state       String
+  stateCode   String   @default("36") // Telangana GST state code
+  pincode     String
+  gstin       String?
+  phone       String?
+  email       String?
+  /// Default GST rate applied to NEW lab catalog entries (%). 0 = exempt (correct
+  /// default for diagnostic services). Admin/CA can override per test.
+  defaultLabGstPct Decimal @default(0) @db.Decimal(4, 2)
+  updatedAt   DateTime @updatedAt
+}
+
+/// Money going BACK to a patient. Deliberately NOT a negative Payment:
+/// a refund has its own reason, its own authoriser, and must never be
+/// mistaken for income in a report. You cannot refund what was never collected.
+model Refund {
+  id           String      @id @default(cuid())
+  invoiceId    String
+  invoice      Invoice     @relation(fields: [invoiceId], references: [id])
+  mode         PaymentMode
+  amount       Decimal     @db.Decimal(10, 2)
+  /// REQUIRED. Nobody hands cash back across a hospital counter without a reason.
+  reason       String
+  reference    String?
+  refundedById String
+  refundedBy   User        @relation("RefundedBy", fields: [refundedById], references: [id])
+  createdAt    DateTime    @default(now())
+
+  @@index([invoiceId])
+  @@index([createdAt])
+}
+
+/// One row per BED a patient occupies during a stay.
+///
+/// An admission used to carry a single `dailyChargeAtAdmit`, which silently
+/// assumed nobody ever moves bed. They do — General to ICU is the most common
+/// event in a hospital. Billing a whole stay at one rate would either rob the
+/// patient or rob the hospital, so each leg of the stay is priced on its own.
+model BedStay {
+  id          String    @id @default(cuid())
+  admissionId String
+  admission   Admission @relation(fields: [admissionId], references: [id])
+  bedId       String
+  bed         Bed       @relation(fields: [bedId], references: [id])
+
+  /// Snapshots — a ward price revision must never re-price a stay already in progress.
+  wardName    String
+  dailyCharge Decimal   @db.Decimal(10, 2)
+  gstRatePct  Decimal   @default(0) @db.Decimal(5, 2)
+
+  fromDate    DateTime  @default(now())
+  /// null = they are in this bed right now.
+  toDate      DateTime?
+  reason      String?
+
+  movedById   String
+  movedBy     User      @relation("BedStayMovedBy", fields: [movedById], references: [id])
+  createdAt   DateTime  @default(now())
+
+  @@index([admissionId])
+  @@index([bedId])
+}
+
+/// The deposit taken at admission. Every hospital takes one; without it a family
+/// can walk out owing lakhs. Adjusted against the discharge bill — and if the
+/// advance exceeds the final bill, the difference is REFUNDED, not kept.
+model AdmissionAdvance {
+  id           String      @id @default(cuid())
+  admissionId  String
+  admission    Admission   @relation(fields: [admissionId], references: [id])
+  mode         PaymentMode
+  amount       Decimal     @db.Decimal(10, 2)
+  reference    String?
+  receivedById String
+  receivedBy   User        @relation("AdvanceReceivedBy", fields: [receivedById], references: [id])
+  createdAt    DateTime    @default(now())
+
+  @@index([admissionId])
+}
+
+/// An insurance claim raised against a patient's treatment — cashless or
+/// reimbursement. Policy details are snapshotted onto the claim so the record
+/// stays true even if the patient's cover changes later. Optionally linked to
+/// the admission (IPD) and the hospital invoice it's claiming against.
+model InsuranceClaim {
+  id          String @id @default(cuid())
+  claimNo     String @unique
+
+  patientId   String
+  patient     Patient @relation("PatientClaims", fields: [patientId], references: [id])
+  admissionId String?
+  invoiceId   String?
+
+  // payer + policy snapshot
+  insurer     String
+  policyNo    String
+  memberId    String?
+  sumInsured  Decimal? @db.Decimal(12, 2)
+
+  type      ClaimType   @default(CASHLESS)
+  stage     ClaimStage  @default(PRE_AUTH)
+  status    ClaimStatus @default(DRAFT)
+
+  diagnosis      String?
+  claimedAmount  Decimal  @db.Decimal(12, 2)
+  approvedAmount Decimal? @db.Decimal(12, 2)
+  settledAmount  Decimal? @db.Decimal(12, 2)
+  /// The insurer's / TPA's own reference (authorization or claim number).
+  insurerRef     String?
+  remarks        String?
+
+  submittedAt DateTime?
+  decisionAt  DateTime?
+  settledAt   DateTime?
+
+  createdById String
+  createdBy   User     @relation("ClaimCreatedBy", fields: [createdById], references: [id])
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  events ClaimEvent[]
+
+  @@index([status, createdAt])
+  @@index([patientId])
+}
+
+/// One entry on a claim's timeline — every submission, query, decision and
+/// settlement. This is the audit trail; the claim's status is derived from it.
+model ClaimEvent {
+  id      String @id @default(cuid())
+  claimId String
+  claim   InsuranceClaim @relation(fields: [claimId], references: [id])
+  /// CREATED · SUBMITTED · QUERIED · APPROVED · PARTIALLY_APPROVED · REJECTED · SETTLED · NOTE
+  kind    String
+  detail  String?
+  amount  Decimal? @db.Decimal(12, 2)
+  byId    String
+  by      User     @relation("ClaimEventBy", fields: [byId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@index([claimId, createdAt])
+}
+
+/// One staff sign-in session — when they logged in and out. Powers the admin
+/// "who was on shift, and for how long" view. Patients are not tracked here.
+model StaffSession {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation("UserSessions", fields: [userId], references: [id])
+  /// OTP or PASSWORD.
+  method    String
+  ipAddress String?
+  userAgent String?
+  loginAt   DateTime  @default(now())
+  logoutAt  DateTime?
+
+  @@index([userId, loginAt])
+  @@index([loginAt])
+}

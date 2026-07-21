@@ -1,0 +1,60 @@
+@import "tailwindcss";
+@import "./portal-theme.css";
+
+@theme inline {
+  /* Jeeva theme v2 — from the user's Figma frame */
+  --color-ink: #0b1220;
+  --color-ink-soft: #303a4f;
+  --color-blue: #2e6be6;
+  --color-blue-deep: #1e4fc2;
+  --color-blue-tint: #d9e6fb;
+  --color-blue-soft: #eef4fe;
+  --color-line: #e6eaf2;
+  --color-mist: #f7f9fc;
+  --color-muted: #5a6478;
+
+  --font-display: var(--font-bricolage);
+  --font-sans: var(--font-instrument);
+  --font-mono: var(--font-plex-mono);
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth; /* native — no JS hijacking */
+  }
+  body {
+    @apply bg-white font-sans text-ink antialiased;
+  }
+  ::selection {
+    @apply bg-blue-tint text-blue-deep;
+  }
+
+  [data-reveal] {
+    opacity: 0;
+    transform: translateY(22px);
+    transition:
+      opacity 0.7s ease,
+      transform 0.7s cubic-bezier(0.2, 0.6, 0.2, 1);
+  }
+  [data-reveal="in"] {
+    opacity: 1;
+    transform: none;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    [data-reveal] {
+      opacity: 1;
+      transform: none;
+      transition: none;
+    }
+  }
+}
+
+@layer components {
+  .container-x {
+    @apply mx-auto w-full max-w-6xl px-5 md:px-8;
+  }
+  /* Eyebrow — small caps label above every heading */
+  .eyebrow {
+    @apply text-[11px] font-semibold uppercase tracking-[0.22em] text-blue;
+  }
+}

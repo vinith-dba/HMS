@@ -1,0 +1,400 @@
+/* ============================================================================
+   JEEVA — public site design system  ·  v5 "clear sky"
+   ----------------------------------------------------------------------------
+   Direction: the friendly clinical look — a clean white canvas, one sky-blue
+   hero wash, ink-black pill CTAs, a pastel tint family (sky / mint / peach)
+   for the bento cards, neutral grotesque headings, and small editorial
+   touches: mono "(001)" indices and hairline rules. Rounded panels and the
+   scooped-corner utilities carry over from v4.
+
+   Everything lives in @layer components so Tailwind utilities (layered
+   after components) can override theme classes — `hidden`, `rounded-*`,
+   `!px-*` etc. all behave as expected on themed elements.
+   ========================================================================== */
+
+@layer components {
+
+.site {
+  /* canvas — porcelain, the cool off-white the staff portals wear */
+  --bone:        #eef1ef;
+  --bone-deep:   #e4e9e6;
+  --paper:       #ffffff;
+
+  /* ink — deep pine-black, the portal ink */
+  --ink:         #0c1a1c;
+  --ink-soft:    #35454a;
+  --muted:       #6a787c;
+
+  /* accent — deep pine. CTAs stay ink; pine is the voice.
+     (var stays `--teal` so all 17 sections inherit the change for free) */
+  --teal:        #0b544c;
+  --teal-deep:   #073d37;
+  --teal-lift:   #17705f;
+  --teal-soft:   #e7efec;
+  --teal-tint:   #c9ddd6;
+
+  /* dark panel — near-black pine, matches the portal hero shells */
+  --pine-ink:    #0b201d;
+  --pine-ink-2:  #123029;
+
+  /* the tint family — muted & editorial (sage / green / warm sand),
+     not candy. Harmonises with pine so the bento reads as one material. */
+  --sky:         #d6e4de;
+  --sky-soft:    #e9f1ed;
+  --mint:        #dce8dd;
+  --mint-soft:   #eef4ee;
+  --peach:       #efe3d1;
+  --peach-soft:  #f7f0e4;
+
+  /* secondary — muted brass. Rare. (the portal amber) */
+  --saffron:     #a97b3f;
+  --saffron-soft:#f2ebdf;
+
+  /* emergency — only ever this, only ever for emergency (portal rose) */
+  --alert:       #c2402f;
+  --alert-deep:  #a33324;
+  --alert-soft:  #f7ece9;
+
+  --line:        #e2e7e5;
+  --line-strong: #cdd6d3;
+
+  /* geometry — the whole redesign lives here */
+  --r-sm:        16px;
+  --r-md:        22px;
+  --r-lg:        26px;
+  --r-xl:        36px;
+  --r-shell:     44px;
+  --radius:      var(--r-md);
+
+  --shadow-sm:   0 1px 2px rgba(12, 26, 28, 0.05);
+  --shadow:      0 24px 60px -28px rgba(11, 32, 29, 0.22);
+
+  background: var(--bone);
+  color: var(--ink);
+  font-feature-settings: "cv01", "cv03", "ss01";
+}
+
+/* --- surfaces -------------------------------------------------------------- */
+.card {
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+}
+.card-hover {
+  transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.card-hover:hover {
+  transform: translateY(-4px);
+  box-shadow: var(--shadow);
+}
+
+/* inset section shells — big rounded panels floating on the canvas */
+.shell {
+  border-radius: var(--r-shell);
+}
+.shell-dark {
+  border-radius: var(--r-shell);
+  background: var(--pine-ink);
+  color: #fff;
+}
+@media (max-width: 640px) {
+  .shell, .shell-dark { border-radius: var(--r-xl); }
+}
+
+.glass {
+  background: rgba(255, 255, 255, 0.78);
+  backdrop-filter: blur(16px) saturate(1.5);
+  -webkit-backdrop-filter: blur(16px) saturate(1.5);
+}
+
+/* ============================================================================
+   THE SCOOP — inverted-radius corner notch.
+   A page-coloured bite taken out of a rounded panel; content (a pill button,
+   a chip, an arrow) docks inside the notch. The two pseudo-elements are
+   transparent quarter-rounds whose box-shadow paints the concave curves.
+   Parent must be `relative` with `overflow: visible`.
+   Set --scoop-bg to the colour BEHIND the panel.
+   ========================================================================== */
+.scoop {
+  --scoop-bg: var(--bone);
+  --scoop-r: 20px;   /* concave curve radius        */
+  --scoop-in: 24px;  /* inner corner of the notch   */
+  position: absolute;
+  z-index: 2;
+  background: var(--scoop-bg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.scoop::before,
+.scoop::after {
+  content: "";
+  position: absolute;
+  width: var(--scoop-r);
+  height: var(--scoop-r);
+  background: transparent;
+  pointer-events: none;
+}
+
+/* bottom-right notch */
+.scoop-br { right: 0; bottom: 0; border-top-left-radius: var(--scoop-in); padding: 10px 0 0 10px; }
+.scoop-br::before { right: 0; top: calc(-1 * var(--scoop-r)); border-bottom-right-radius: 100%; box-shadow: var(--scoop-r) var(--scoop-r) 0 0 var(--scoop-bg); }
+.scoop-br::after  { left: calc(-1 * var(--scoop-r)); bottom: 0; border-bottom-right-radius: 100%; box-shadow: var(--scoop-r) var(--scoop-r) 0 0 var(--scoop-bg); }
+
+/* top-right notch */
+.scoop-tr { right: 0; top: 0; border-bottom-left-radius: var(--scoop-in); padding: 0 0 10px 10px; }
+.scoop-tr::before { right: 0; bottom: calc(-1 * var(--scoop-r)); border-top-right-radius: 100%; box-shadow: var(--scoop-r) calc(-1 * var(--scoop-r)) 0 0 var(--scoop-bg); }
+.scoop-tr::after  { left: calc(-1 * var(--scoop-r)); top: 0; border-top-right-radius: 100%; box-shadow: var(--scoop-r) calc(-1 * var(--scoop-r)) 0 0 var(--scoop-bg); }
+
+/* bottom-left notch */
+.scoop-bl { left: 0; bottom: 0; border-top-right-radius: var(--scoop-in); padding: 10px 10px 0 0; }
+.scoop-bl::before { left: 0; top: calc(-1 * var(--scoop-r)); border-bottom-left-radius: 100%; box-shadow: calc(-1 * var(--scoop-r)) var(--scoop-r) 0 0 var(--scoop-bg); }
+.scoop-bl::after  { right: calc(-1 * var(--scoop-r)); bottom: 0; border-bottom-left-radius: 100%; box-shadow: calc(-1 * var(--scoop-r)) var(--scoop-r) 0 0 var(--scoop-bg); }
+
+/* top-left notch */
+.scoop-tl { left: 0; top: 0; border-bottom-right-radius: var(--scoop-in); padding: 0 10px 10px 0; }
+.scoop-tl::before { left: 0; bottom: calc(-1 * var(--scoop-r)); border-top-left-radius: 100%; box-shadow: calc(-1 * var(--scoop-r)) calc(-1 * var(--scoop-r)) 0 0 var(--scoop-bg); }
+.scoop-tl::after  { right: calc(-1 * var(--scoop-r)); top: 0; border-top-left-radius: 100%; box-shadow: calc(-1 * var(--scoop-r)) calc(-1 * var(--scoop-r)) 0 0 var(--scoop-bg); }
+
+/* scoops sitting on white (inside a paper card) or on dark shells */
+.scoop-on-paper { --scoop-bg: var(--paper); }
+.scoop-on-dark  { --scoop-bg: var(--pine-ink); }
+
+/* --- type ------------------------------------------------------------------ */
+/* v5: headings go neutral grotesque — friendly, not monumental */
+.display {
+  font-family: var(--font-geist), var(--font-sans);
+  font-weight: 600;
+  letter-spacing: -0.035em;
+  line-height: 1.04;
+}
+
+/* editorial index — the "(001)" marks beside section copy */
+.idx {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--teal);
+}
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* label with a hairline rule — "Departments ————" */
+.sec-index {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+.sec-index::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--teal);
+  flex: none;
+}
+.sec-index::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line-strong);
+}
+.sec-index-dark { color: rgba(255, 255, 255, 0.55); }
+.sec-index-dark::before { background: var(--teal-lift); }
+.sec-index-dark::after { background: rgba(255, 255, 255, 0.14); }
+
+/* mono data chip — hours, phone, counts */
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: transparent;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0.02em;
+  color: var(--ink-soft);
+  white-space: nowrap;
+}
+.chip-solid { background: var(--paper); border-color: transparent; box-shadow: var(--shadow-sm); }
+.chip-glass {
+  border-color: rgba(255, 255, 255, 0.25);
+  background: rgba(12, 26, 28, 0.35);
+  color: #fff;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+/* --- signature: the vitals line --------------------------------------------
+   One calm ECG pulse in a long flat line. Used as the section divider. */
+.vitals { display: block; width: 100%; height: 28px; color: var(--teal); opacity: 0.5; }
+.vitals path {
+  stroke: currentColor; stroke-width: 1.5; fill: none;
+  stroke-linecap: round; stroke-linejoin: round;
+  stroke-dasharray: 1200; stroke-dashoffset: 1200;
+}
+[data-reveal].in .vitals path, .vitals.static path { animation: vitals-draw 2.4s cubic-bezier(0.3, 0, 0.2, 1) forwards; }
+@keyframes vitals-draw { to { stroke-dashoffset: 0; } }
+
+/* --- buttons --------------------------------------------------------------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border-radius: 999px;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 14px 28px;
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1),
+              background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease,
+              box-shadow 0.25s ease;
+  white-space: nowrap;
+}
+.btn-solid { background: var(--ink); color: #fff; }
+.btn-solid:hover { background: #000409; transform: translateY(-1px); box-shadow: var(--shadow); }
+.btn-ghost { border: 1px solid var(--line-strong); color: var(--ink); background: transparent; }
+.btn-ghost:hover { border-color: var(--teal); color: var(--teal); transform: translateY(-1px); }
+.btn-light { background: #fff; color: var(--ink); }
+.btn-light:hover { background: var(--bone); transform: translateY(-1px); box-shadow: var(--shadow); }
+.btn-ghost-dark { border: 1px solid rgba(255, 255, 255, 0.25); color: #fff; background: transparent; }
+.btn-ghost-dark:hover { border-color: rgba(255, 255, 255, 0.6); transform: translateY(-1px); }
+
+/* circular arrow button — docks into scoops, sits on cards */
+.icon-btn {
+  display: grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  flex: none;
+  border-radius: 999px;
+  background: var(--teal);
+  color: #fff;
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), background-color 0.2s ease;
+}
+.icon-btn:hover { background: var(--teal-deep); transform: rotate(45deg); }
+.icon-btn-ghost { background: transparent; border: 1px solid var(--line-strong); color: var(--ink); }
+.icon-btn-ghost:hover { background: var(--teal); border-color: var(--teal); color: #fff; }
+
+/* --- mega menu drop-in --------------------------------------------------------- */
+.mega-in {
+  transform-origin: top center;
+  animation: mega-in 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes mega-in {
+  from { opacity: 0; transform: translateY(-8px) scale(0.99); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* --- ambient motion — the layer that makes it feel alive ---------------------- */
+@keyframes drift {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-12px); }
+}
+.drift { animation: drift 7s ease-in-out infinite; }
+.drift-slow { animation: drift 11s ease-in-out infinite; }
+.drift-delay { animation-delay: 2.2s; }
+
+/* photo tiles breathe on hover */
+.zoom-media { overflow: hidden; }
+.zoom-media img {
+  transition: transform 0.8s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.zoom-media:hover img { transform: scale(1.05); }
+
+/* --- live pulse dot ---------------------------------------------------------- */
+.pulse { position: relative; display: inline-block; width: 7px; height: 7px; border-radius: 999px; background: var(--teal-lift); }
+.pulse::after { content: ""; position: absolute; inset: 0; border-radius: 999px; background: var(--teal-lift); animation: ping 2.2s cubic-bezier(0, 0, 0.2, 1) infinite; }
+@keyframes ping { 0% { transform: scale(1); opacity: 0.6 } 75%, 100% { transform: scale(2.6); opacity: 0 } }
+
+/* --- scroll reveal ----------------------------------------------------------- */
+[data-reveal] {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity 0.7s cubic-bezier(0.22, 1, 0.36, 1),
+              transform 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+  transition-delay: var(--d, 0ms);
+}
+[data-reveal].in { opacity: 1; transform: none; }
+
+/* --- department marquee ------------------------------------------------------ */
+.ticker { display: flex; width: max-content; animation: slide 48s linear infinite; }
+.ticker-wrap:hover .ticker { animation-play-state: paused; }
+@keyframes slide { to { transform: translateX(-50%); } }
+
+/* --- FAQ accordion (native <details>) — each question is a rounded card ------- */
+.faq {
+  background: var(--paper);
+  border-radius: var(--r-md);
+  margin-bottom: 10px;
+  box-shadow: var(--shadow-sm);
+  transition: box-shadow 0.25s ease;
+}
+.faq summary { padding-left: 24px; padding-right: 20px; border-radius: var(--r-md); }
+.faq-body { padding-left: 24px; }
+.faq[open] { box-shadow: var(--shadow); }
+.faq summary::-webkit-details-marker { display: none; }
+.faq-chev {
+  display: grid; place-items: center;
+  width: 30px; height: 30px; flex: none;
+  border-radius: 999px; border: 1px solid var(--line-strong);
+  color: var(--muted);
+  transition: transform .28s cubic-bezier(.2,.8,.2,1), background .2s ease, color .2s ease, border-color .2s ease;
+}
+.faq[open] .faq-chev { transform: rotate(45deg); background: var(--teal); border-color: var(--teal); color: #fff; }
+.faq summary:hover .faq-chev { border-color: var(--teal); color: var(--teal); }
+.faq[open] summary h3 { color: var(--teal-deep); }
+.faq-body { animation: faq-in .3s cubic-bezier(.2,.8,.2,1); }
+@keyframes faq-in { from { opacity: 0; transform: translateY(-5px); } to { opacity: 1; transform: none; } }
+
+/* --- giant footer wordmark ----------------------------------------------------- */
+.wordmark {
+  font-family: var(--font-display);
+  font-weight: 700;
+  letter-spacing: -0.05em;
+  line-height: 0.72;
+  font-size: clamp(6rem, 21vw, 21rem);
+  color: rgba(255, 255, 255, 0.07);
+  user-select: none;
+}
+
+/* --- accessibility ------------------------------------------------------------ */
+.site :is(a, button, summary):focus-visible {
+  outline: 2px solid var(--teal);
+  outline-offset: 3px;
+  border-radius: 8px;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-reveal] { opacity: 1; transform: none; transition: none; }
+  .ticker { animation: none; }
+  .pulse::after { animation: none; }
+  .btn:hover, .card-hover:hover, .icon-btn:hover { transform: none; }
+  .vitals path { animation: none; stroke-dashoffset: 0; }
+  .faq-body { animation: none; }
+  .mega-in { animation: none; }
+  .drift, .drift-slow { animation: none; }
+  .zoom-media:hover img { transform: none; }
+}
+
+/* --- Lenis smooth scroll -------------------------------------------------------- */
+html.lenis, html.lenis body { height: auto; }
+.lenis.lenis-smooth { scroll-behavior: auto !important; }
+.lenis.lenis-smooth [data-lenis-prevent] { overscroll-behavior: contain; }
+
+} /* @layer components */
